@@ -27,6 +27,7 @@ try {
 let forceSecureHosts = [];
 const maxSrcWidth = process.env.RESIZE_TO;
 const maxInlineWidth = process.env.SCALE_TO;
+const headersToForward = [ 'Referer', 'Accept-Language', 'User-Agent' ];
 
 const cssMinifyOptions = {
   compatibility: {
@@ -92,8 +93,16 @@ app.get("*", async (req, res, next) => {
     upstreamUrl = url.replace(/^http:/, "https:");
   }
 
+  // retrieve headers from the client, if set
+  let headers = {};
+  headersToForward.forEach( (name) => {
+    if (req.get(name)) {
+      headers[name] = req.get(name);
+    }
+  } );
+
   try {
-    const upstream = await fetch(upstreamUrl, {redirect: 'manual'});
+    const upstream = await fetch(upstreamUrl, {headers: headers, redirect: 'manual'});
     if (upstream.status >= 300 && upstream.status < 400) {
       const newUrl = upstream.headers.get('location');
       console.log("redirect (", upstream.status, ") ", url, " => ", newUrl);

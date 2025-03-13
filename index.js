@@ -27,6 +27,7 @@ try {
 let forceSecureHosts = [];
 const maxSrcWidth = process.env.RESIZE_TO;
 const maxInlineWidth = process.env.SCALE_TO;
+const headersToForward = [ 'Accept-Language', 'User-Agent' ]; // Referer and Origin handled separately (below)
 
 const cssMinifyOptions = {
   compatibility: {
@@ -92,8 +93,26 @@ app.get("*", async (req, res, next) => {
     upstreamUrl = url.replace(/^http:/, "https:");
   }
 
+  // retrieve headers from the client, if set
+  let headers = {};
+  headersToForward.forEach( (name) => {
+    if (req.get(name)) {
+      headers[name] = req.get(name);
+    }
+  } );
+  // fix Referer if forceSecure from the prev. site
+  let referer = req.get('Referer');
+  if (referer) {
+    let refUrl = new URL(referer);
+    if (forceSecureHosts.some((f) => refUrl.hostname.endsWith(f))) {
+      refUrl.protocol = 'https';
+    }
+    headers['Referer'] = refUrl.href;
+    headers['Origin'] = refUrl.origin;
+  }
+
   try {
-    const upstream = await fetch(upstreamUrl, {redirect: 'manual'});
+    const upstream = await fetch(upstreamUrl, {headers: headers, redirect: 'manual'});
     if (upstream.status >= 300 && upstream.status < 400) {
       const newUrl = upstream.headers.get('location');
       console.log("redirect (", upstream.status, ") ", url, " => ", newUrl);
@@ -178,11 +197,6 @@ app.get("*", async (req, res, next) => {
         $("[href^='/']").each(function(index,element) {
           const href = $(element).attr('href');
           $(this).attr('href',new URL(url).origin+href);
-        });
-        // form actions too (may not actually be necessary)
-        $("[action^='/']").each(function(index,element) {
-          const action = $(element).attr('action');
-          $(this).attr('action',new URL(url).origin+action);
         });
         res.set("Content-Type", "text/html");
         res.status(upstream.status);

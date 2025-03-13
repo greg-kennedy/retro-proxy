@@ -24,6 +24,7 @@ try {
   console.error('Failed to open "allowed.txt"! See allowed.txt.example for a starting point.');
   friendlies = [];
 }
+let forceSecureHosts = [];
 const maxSrcWidth = process.env.RESIZE_TO;
 const maxInlineWidth = process.env.SCALE_TO;
 
@@ -81,120 +82,152 @@ app.get("*", async (req, res, next) => {
   const url = req.originalUrl;
   if (friendly) {
     console.log("friendly site:", url);
+  } else {
+    console.log("hostile site:", url);
   }
-  try {
-    const upstream = await fetch(url);
-    const contentType = upstream.headers.get("content-type");
-    //console.log(contentType);
-    if (contentType.startsWith("text/html")) {
-      const imageSizes = {};
-      const text = (await upstream.text()).replace(/https:\/\//g, "http://");
-      const $ = cheerio.load(text);
-      if (!friendly && stripJs) {
-        $("script").remove();
-        $("noscript").after(function (index) {
-          $(this).contents();
-        });
-        $("noscript").remove();
-      }
-      if (!friendly && stripCSS) {
-        $("style").remove();
-        $("link").remove();
-        $("*").removeAttr("class");
-        $("*").removeAttr("style");
-      }
-      if (!friendly) {
-        const imgs = [];
-        $("img").each(function () {
-          const src = new URL($(this).attr("src"), url).href;
-          //remove SVGs for now
-          if (src.toLowerCase().endsWith(".svg")) {
-            $(this).remove();
-          } else {
-            imgs.push(this);
-          }
-        });
+  // modify the incoming URL based on whether the site is forcing HTTPS
+  const forceSecure = forceSecureHosts.some((f) => req.hostname.endsWith(f));
+  let upstreamUrl = url;
+  if (forceSecure) {
+    upstreamUrl = url.replace(/^http:/, "https:");
+  }
 
-        if (maxInlineWidth) {
-          //set image tag sizes
-          for (let img of imgs) {
-            const src = new URL($(img).attr("src"), url).href;
-            const attrWidth = $(img).attr("width");
-            const attrHeight = $(img).attr("height");
-            if (!attrWidth) {
-              try {
-                if (!imageSizes[src]) {
-                  const image = await Jimp.read(src);
-                  imageSizes[src] = {
-                    width: image.bitmap.width,
-                    height: image.bitmap.height,
-                  };
+  try {
+    const upstream = await fetch(upstreamUrl, {redirect: 'manual'});
+    if (upstream.status >= 300 && upstream.status < 400) {
+      const newUrl = upstream.headers.get('location');
+      console.log("redirect (", upstream.status, ") ", url, " => ", newUrl);
+
+      // try to figure out if the upstream is forcing us to use HTTPS only
+      //  we test this by seeing if the request and location are the same,
+      //  except the proto
+      if (!forceSecure && newUrl == url.replace(/^http:/, "https:")) {
+        forceSecureHosts.push(req.hostname);
+        console.log(" . Forcing HTTPS for hostname", req.hostname);
+      }
+
+      // always return HTTP instead of HTTPS to the client though
+      res.set("Location", newUrl.replace(/^https:/, "http:"));
+      res.status(upstream.status);
+      res.send(await upstream.buffer());
+    } else {
+      const contentType = upstream.headers.get("content-type");
+      //console.log(contentType);
+      if (contentType.startsWith("text/html")) {
+        const imageSizes = {};
+        const text = (await upstream.text()).replace(/https:\/\//g, "http://");
+        const $ = cheerio.load(text);
+        if (!friendly && stripJs) {
+          $("script").remove();
+          $("noscript").after(function (index) {
+            $(this).contents();
+          });
+          $("noscript").remove();
+        }
+        if (!friendly && stripCSS) {
+          $("style").remove();
+          $("link").remove();
+          $("*").removeAttr("class");
+          $("*").removeAttr("style");
+        }
+        if (!friendly) {
+          const imgs = [];
+          $("img").each(function () {
+            const src = new URL($(this).attr("src"), url).href;
+            //remove SVGs for now
+            if (src.toLowerCase().endsWith(".svg")) {
+              $(this).remove();
+            } else {
+              imgs.push(this);
+            }
+          });
+
+          if (maxInlineWidth) {
+            //set image tag sizes
+            for (let img of imgs) {
+              const src = new URL($(img).attr("src"), url).href;
+              const attrWidth = $(img).attr("width");
+              const attrHeight = $(img).attr("height");
+              if (!attrWidth) {
+                try {
+                  if (!imageSizes[src]) {
+                    const image = await Jimp.read(src);
+                    imageSizes[src] = {
+                      width: image.bitmap.width,
+                      height: image.bitmap.height,
+                    };
+                  }
+                  const width = Math.min(maxInlineWidth, imageSizes[src].width);
+                  const height =
+                    (imageSizes[src].height * width) / imageSizes[src].width;
+                  $(this).attr("width", width);
+                    $(this).attr("height", height);
+                } catch (error) {
+                  console.error("Unable to resize image: "+error);
                 }
-                const width = Math.min(maxInlineWidth, imageSizes[src].width);
-                const height =
-                  (imageSizes[src].height * width) / imageSizes[src].width;
+              } else {
+                const width = Math.min(maxInlineWidth, attrWidth);
+                const height = (attrHeight * width) / attrWidth;
                 $(this).attr("width", width);
                 $(this).attr("height", height);
-              } catch (error) {
-                console.error("Unable to resize image: "+error);
               }
-            } else {
-              const width = Math.min(maxInlineWidth, attrWidth);
-              const height = (attrHeight * width) / attrWidth;
-              $(this).attr("width", width);
-              $(this).attr("height", height);
             }
           }
         }
-      }
-      //fix root-relative URLs for Netscape
-      $("[href^='/']").each(function(index,element) {
-      const href = $(element).attr('href');
-      $(this).attr('href',new URL(url).origin+href);
-    });
-      res.set("Content-Type", "text/html");
-      res.status(upstream.status);
-      if (!friendly) {
-        const minified = minify(
-          $.root()
-            .html()
-            .replace(/&apos;/g, "'"),
-          minifyOptions
-        );
-        console.log("html minified", contentType, url);
-        res.send(minified);
+        //fix root-relative URLs for Netscape
+        $("[href^='/']").each(function(index,element) {
+          const href = $(element).attr('href');
+          $(this).attr('href',new URL(url).origin+href);
+        });
+        // form actions too (may not actually be necessary)
+        $("[action^='/']").each(function(index,element) {
+          const action = $(element).attr('action');
+          $(this).attr('action',new URL(url).origin+action);
+        });
+        res.set("Content-Type", "text/html");
+        res.status(upstream.status);
+        if (!friendly) {
+          const minified = minify(
+            $.root()
+              .html()
+              .replace(/&apos;/g, "'"),
+            minifyOptions
+          );
+          console.log("html minified", upstream.status, contentType, url);
+          res.send(minified);
+        } else {
+          res.send(
+            $.root()
+              .html()
+              .replace(/&apos;/g, "'")
+          );
+        }
+      } else if (contentType.startsWith("text/css")) {
+        const text = await upstream.text();
+        res.set("Content-Type", "text/css");
+        res.status(upstream.status);
+        res.send(new CleanCSS(cssMinifyOptions).minify(text).styles);
+        console.log("css minified", contentType, url);
+      } else if (
+        !friendly &&
+        minifyImages &&
+        contentType.startsWith("image/") &&
+        !contentType.includes("xml")
+      ) {
+        const buffer = await upstream.buffer();
+        const image = await Jimp.read(buffer);
+        image.resize(Math.min(maxSrcWidth, image.bitmap.width), Jimp.AUTO);
+        image.quality(50);
+        const output = await image.getBufferAsync("image/jpeg");
+        res.set("Content-Type", "image/jpeg");
+        res.status(upstream.status);
+        res.send(output);
+        console.log("image minified", contentType, url);
       } else {
-        res.send(
-          $.root()
-            .html()
-            .replace(/&apos;/g, "'")
-        );
+        res.set("Content-Type", contentType);
+        res.status(upstream.status);
+        res.send(await upstream.buffer());
       }
-    } else if (contentType.startsWith("text/css")) {
-      const text = await upstream.text();
-      res.set("Content-Type", "text/css");
-      res.status(upstream.status);
-      res.send(new CleanCSS(cssMinifyOptions).minify(text).styles);
-      console.log("css minified", contentType, url);
-    } else if (
-      !friendly &&
-      minifyImages &&
-      contentType.startsWith("image/") &&
-      !contentType.includes("xml")
-    ) {
-      const buffer = await upstream.buffer();
-      const image = await Jimp.read(buffer);
-      image.resize(Math.min(maxSrcWidth, image.bitmap.width), Jimp.AUTO);
-      image.quality(50);
-      const output = await image.getBufferAsync("image/jpeg");
-      res.set("Content-Type", "image/jpeg");
-      res.status(upstream.status);
-      res.send(output);
-      console.log("image minified", contentType, url);
-    } else {
-      res.set("Content-Type", contentType);
-      res.status(upstream.status);
-      res.send(await upstream.buffer());
     }
   } catch (error) {
     console.error(error);

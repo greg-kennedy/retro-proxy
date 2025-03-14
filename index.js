@@ -27,7 +27,7 @@ try {
 let forceSecureHosts = [];
 const maxSrcWidth = process.env.RESIZE_TO;
 const maxInlineWidth = process.env.SCALE_TO;
-const headersToForward = [ 'Accept-Language', 'User-Agent' ]; // Referer and Origin handled separately (below)
+const headersToForward = [ 'Accept-Language', 'User-Agent', 'Content-Type' ]; // Referer and Origin handled separately (below)
 
 const cssMinifyOptions = {
   compatibility: {
@@ -78,13 +78,15 @@ const minifyOptions = {
   continueOnParseError: true
 };
 
-app.get("*", async (req, res, next) => {
+app.use(express.raw( {type: '*/*'} ));
+
+app.all("*", async (req, res, next) => {
   const friendly = friendlies.some((f) => req.hostname.endsWith(f));
   const url = req.originalUrl;
   if (friendly) {
-    console.log("friendly site:", url);
+    console.log("friendly site:", req.method, url);
   } else {
-    console.log("hostile site:", url);
+    console.log("hostile site:", req.method, url);
   }
   // modify the incoming URL based on whether the site is forcing HTTPS
   const forceSecure = forceSecureHosts.some((f) => req.hostname.endsWith(f));
@@ -112,7 +114,11 @@ app.get("*", async (req, res, next) => {
   }
 
   try {
-    const upstream = await fetch(upstreamUrl, {headers: headers, redirect: 'manual'});
+    let options = {method: req.method, headers: headers, redirect: 'manual'};
+    if (req.method != 'GET' && req.method != 'HEAD') {
+      options['body'] = req.body;
+    }
+    const upstream = await fetch(upstreamUrl, options);
     if (upstream.status >= 300 && upstream.status < 400) {
       const newUrl = upstream.headers.get('location');
       console.log("redirect (", upstream.status, ") ", url, " => ", newUrl);

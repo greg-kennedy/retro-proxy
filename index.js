@@ -228,6 +228,17 @@ app.all("*", async (req, res, next) => {
           const href = $(element).attr('href');
           $(this).attr('href',new URL(url).origin+href);
         });
+        // HACK to fix oauth - redirect_uri in a form field must be https
+        $("input").each(function(index,element) {
+          if ($(element).attr('id') === 'redirect_uri') {
+            let redirect_uri = new URL($(element).attr('value'));
+            if (forceSecureHosts.some((f) => redirect_uri.hostname.endsWith(f))) {
+              redirect_uri.protocol = 'https';
+              $(this).attr('value', redirect_uri.href);
+            }
+          }
+        });
+
         res.set("Content-Type", "text/html");
         res.status(upstream.status);
         if (!friendly) {

@@ -27,7 +27,7 @@ try {
 let forceSecureHosts = [];
 const maxSrcWidth = process.env.RESIZE_TO;
 const maxInlineWidth = process.env.SCALE_TO;
-const headersToForward = [ 'Accept-Language', 'User-Agent', 'Content-Type' ]; // Referer and Origin handled separately (below)
+const headersToForward = [ 'Accept-Language', 'User-Agent', 'Content-Type' ]; // Referer, Origin and Cookie handled separately (below)
 
 const cssMinifyOptions = {
   compatibility: {
@@ -112,6 +112,19 @@ app.all("*", async (req, res, next) => {
     headers['Referer'] = refUrl.href;
     headers['Origin'] = refUrl.origin;
   }
+  let cookie = req.get('Cookie');
+  if (cookie) {
+    // all Cookies should be URL-encoded
+    const cookieList = cookie.split(/\s*;\s*/);
+    headers['Cookie'] = cookieList.map((ck) => {
+      const index = ck.indexOf("=");
+      if (index === -1) {
+        return ck;
+      } else {
+        return ck.substring(0, index) + '=' + encodeURIComponent(ck.substring(index + 1));
+      }
+    }).join('; ');
+  }
 
   try {
     let options = {method: req.method, headers: headers, redirect: 'manual'};
@@ -119,6 +132,15 @@ app.all("*", async (req, res, next) => {
       options['body'] = req.body;
     }
     const upstream = await fetch(upstreamUrl, options);
+
+    // copy set-cookie header
+    //  strip out any "secure" option, because the client is always http
+    const setCookie = upstream.headers.raw()["set-cookie"]
+    if (setCookie) {
+      const fixedCookie = setCookie.map((cookie) => cookie.replace(/;\s*secure\s*/i, ""));
+      res.set('Set-Cookie', fixedCookie);
+    }
+
     if (upstream.status >= 300 && upstream.status < 400) {
       const newUrl = upstream.headers.get('location');
       console.log("redirect (", upstream.status, ") ", url, " => ", newUrl);

@@ -166,6 +166,8 @@ app.all("*", async (req, res, next) => {
               imgs.push(this);
             }
           });
+          //remove inline SVG as well
+          $("svg").remove();
 
           if (maxInlineWidth) {
             //set image tag sizes

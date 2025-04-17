@@ -14,6 +14,7 @@ const ip = process.env.IP;
 const port = process.env.PORT || 3000;
 const stripCSS = process.env.NO_CSS;
 const stripJs = process.env.NO_JS;
+const blockCookies = process.env.NO_COOKIES;
 const minifyImages = Boolean(process.env.RESIZE_TO);
 let friendlies = [];
 try {
@@ -112,18 +113,22 @@ app.all("*", async (req, res, next) => {
     headers['Referer'] = refUrl.href;
     headers['Origin'] = refUrl.origin;
   }
-  let cookie = req.get('Cookie');
-  if (cookie) {
-    // all Cookies should be URL-encoded
-    const cookieList = cookie.split(/\s*;\s*/);
-    headers['Cookie'] = cookieList.map((ck) => {
-      const index = ck.indexOf("=");
-      if (index === -1) {
-        return ck;
-      } else {
-        return ck.substring(0, index) + '=' + encodeURIComponent(ck.substring(index + 1));
-      }
-    }).join('; ');
+
+  // only pass Cookie if allowed by .env
+  if (! blockCookies) {
+    let cookie = req.get('Cookie');
+    if (cookie) {
+      // all Cookies should be URL-encoded
+      const cookieList = cookie.split(/\s*;\s*/);
+      headers['Cookie'] = cookieList.map((ck) => {
+        const index = ck.indexOf("=");
+        if (index === -1) {
+          return ck;
+        } else {
+          return ck.substring(0, index) + '=' + encodeURIComponent(ck.substring(index + 1));
+        }
+      }).join('; ');
+    }
   }
 
   try {
@@ -135,10 +140,12 @@ app.all("*", async (req, res, next) => {
 
     // copy set-cookie header
     //  strip out any "secure" option, because the client is always http
-    const setCookie = upstream.headers.raw()["set-cookie"]
-    if (setCookie) {
-      const fixedCookie = setCookie.map((cookie) => cookie.replace(/;\s*secure\s*/i, ""));
-      res.set('Set-Cookie', fixedCookie);
+    if (! blockCookies) {
+      const setCookie = upstream.headers.raw()["set-cookie"]
+      if (setCookie) {
+        const fixedCookie = setCookie.map((cookie) => cookie.replace(/;\s*secure\s*/i, ""));
+        res.set('Set-Cookie', fixedCookie);
+      }
     }
 
     if (upstream.status >= 300 && upstream.status < 400) {
@@ -310,5 +317,5 @@ if (ip != "") {
 console.log(
   `Listening on port ${port}, CSS is ${
     stripCSS ? "disabled" : "enabled"
-  }, images are ${minifyImages ? "compressed" : "original quality"}`
+  }, images are ${minifyImages ? "compressed" : "original quality"}, cookies are ${blockCookies ? "blocked" : "allowed"}`
 );
